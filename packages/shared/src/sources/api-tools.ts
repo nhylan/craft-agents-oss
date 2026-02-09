@@ -13,6 +13,7 @@ import type { ApiConfig } from './types.ts';
 import { debug } from '../utils/debug.ts';
 import { estimateTokens, summarizeLargeResult, TOKEN_LIMIT, MAX_SUMMARIZATION_INPUT } from '../utils/summarize.ts';
 import type { ApiCredential, BasicAuthCredential } from './credential-manager.ts';
+import { isMultiHeaderCredential } from './credential-manager.ts';
 
 // Maximum file size for binary downloads (500MB)
 // Prevents memory exhaustion from malicious or unexpectedly large API responses
@@ -466,15 +467,26 @@ function buildHeaders(
     return headers;
   }
 
+  // Handle header auth (supports both single and multi-header)
+  if (auth.type === 'header') {
+    // Multi-header: credential is { headerName: value, ... }
+    if (isMultiHeaderCredential(credential)) {
+      Object.assign(headers, credential);
+    }
+    // Single header: existing behavior
+    else if (typeof credential === 'string' && credential) {
+      headers[auth.headerName || 'x-api-key'] = credential;
+    }
+    return headers;
+  }
+
   // Other types use string credential (API key/token)
   const apiKey = typeof credential === 'string' ? credential : '';
   if (!apiKey) {
     return headers;
   }
 
-  if (auth.type === 'header') {
-    headers[auth.headerName || 'x-api-key'] = apiKey;
-  } else if (auth.type === 'bearer') {
+  if (auth.type === 'bearer') {
     headers['Authorization'] = buildAuthorizationHeader(auth.authScheme, apiKey);
   }
   // Query type is handled in buildUrl
@@ -567,7 +579,8 @@ function buildToolDescription(config: ApiConfig): string {
 export function createApiTool(
   config: ApiConfig,
   credential: ApiCredentialSource,
-  sessionPath?: string
+  sessionPath?: string,
+  summarizationModel?: string
 ) {
   const toolName = `api_${config.name}`;
   debug(`[api-tools] Creating flexible tool: ${toolName}`);
@@ -775,6 +788,7 @@ export function createApiTool(
               path,
               input: params,
               modelIntent: _intent,
+              modelOverride: summarizationModel,
             });
 
             // Return file path + summary
@@ -828,11 +842,12 @@ export function createApiTool(
 export function createApiServer(
   config: ApiConfig,
   credential: ApiCredentialSource,
-  sessionPath?: string
+  sessionPath?: string,
+  summarizationModel?: string
 ): ReturnType<typeof createSdkMcpServer> {
   debug(`[api-tools] Creating server for ${config.name}${sessionPath ? ` (session: ${sessionPath})` : ''}`);
 
-  const apiTool = createApiTool(config, credential, sessionPath);
+  const apiTool = createApiTool(config, credential, sessionPath, summarizationModel);
 
   return createSdkMcpServer({
     name: `api_${config.name}`,

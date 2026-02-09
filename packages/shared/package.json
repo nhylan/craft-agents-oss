@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/shared",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "codexVersion": "craft-v0.4.0",
   "license": "Apache-2.0",
   "description": "Shared business logic for Craft Agents - agent, auth, config, credentials, MCP integration",
@@ -51,7 +51,8 @@
     "./network-interceptor": "./src/network-interceptor.ts",
     "./search": "./src/search/index.ts",
     "./tools": "./src/tools/index.ts",
-    "./codex": "./src/codex/index.ts"
+    "./codex": "./src/codex/index.ts",
+    "./mentions": "./src/mentions/index.ts"
   },
   "dependencies": {
     "@craft-agent/codex-types": "workspace:*",

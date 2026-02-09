@@ -20,10 +20,11 @@ export type MessageRole =
  * Credential input modes for different auth types
  */
 export type CredentialInputMode =
-  | 'bearer'      // Single token field (Bearer Token, API Key)
-  | 'basic'       // Username + Password fields
-  | 'header'      // API Key with custom header name
-  | 'query';      // API Key for query parameter
+  | 'bearer'       // Single token field (Bearer Token, API Key)
+  | 'basic'        // Username + Password fields
+  | 'header'       // API Key with custom header name
+  | 'query'        // API Key for query parameter
+  | 'multi-header'; // Multiple header fields
 
 /**
  * Auth request types
@@ -189,6 +190,7 @@ export interface Message {
   authStatus?: AuthStatus;
   authCredentialMode?: CredentialInputMode;  // For credential requests
   authHeaderName?: string;        // For header auth - the header name
+  authHeaderNames?: string[];     // For multi-header auth (e.g., ["DD-API-KEY", "DD-APPLICATION-KEY"])
   authLabels?: {                  // Custom field labels
     credential?: string;
     username?: string;
@@ -258,6 +260,7 @@ export interface StoredMessage {
   authStatus?: AuthStatus;
   authCredentialMode?: CredentialInputMode;
   authHeaderName?: string;
+  authHeaderNames?: string[];
   authLabels?: {
     credential?: string;
     username?: string;

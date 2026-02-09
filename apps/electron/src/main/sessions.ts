@@ -11,7 +11,6 @@ import {
   resolveSessionConnection,
   providerTypeToAgentProvider,
   connectionAuthTypeToBackendAuthType,
-  getStaticCapabilities,
   type LlmAuthType,
 } from '@craft-agent/shared/agent/backend'
 import {
@@ -29,8 +28,10 @@ import {
   getWorkspaces,
   getWorkspaceByNameOrId,
   loadConfigDefaults,
-  resolveModelId,
+
   migrateLegacyCredentials,
+  migrateLegacyLlmConnectionsConfig,
+  migrateOrphanedDefaultConnections,
   type Workspace,
 } from '@craft-agent/shared/config'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
@@ -65,7 +66,7 @@ import {
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
-import { getAuthState, getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
+import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { setAnthropicOptionsEnv, setPathToClaudeCodeExecutable, setInterceptorPath, setExecutable } from '@craft-agent/shared/agent'
 import { toolMetadataStore } from '@craft-agent/shared/network-interceptor'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
@@ -74,7 +75,7 @@ import { type Session, type Message, type SessionEvent, type FileAttachment, typ
 import { generateSessionTitle, regenerateSessionTitle, formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrl, getEmojiIcon, resetSummarizationClient, resolveToolIcon, type TitleGeneratorOptions } from '@craft-agent/shared/utils'
 import { loadWorkspaceSkills, type LoadedSkill } from '@craft-agent/shared/skills'
 import type { ToolDisplayMeta } from '@craft-agent/core/types'
-import { DEFAULT_MODEL, DEFAULT_CODEX_MODEL, getToolIconsDir, isCodexModel } from '@craft-agent/shared/config'
+import { getToolIconsDir, isCodexModel, getMiniModel, getSummarizationModel } from '@craft-agent/shared/config'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels } from '@craft-agent/shared/labels/storage'
@@ -141,7 +142,8 @@ export const AGENT_FLAGS = {
 async function buildServersFromSources(
   sources: LoadedSource[],
   sessionPath?: string,
-  tokenRefreshManager?: TokenRefreshManager
+  tokenRefreshManager?: TokenRefreshManager,
+  summarizationModel?: string
 ) {
   const span = perf.span('sources.buildServers', { count: sources.length })
   const credManager = getSourceCredentialManager()
@@ -172,7 +174,7 @@ async function buildServersFromSources(
   }
 
   // Pass sessionPath to enable saving large API responses to session folder
-  const result = await serverBuilder.buildAll(sourcesWithCreds, getTokenForSource, sessionPath)
+  const result = await serverBuilder.buildAll(sourcesWithCreds, getTokenForSource, sessionPath, summarizationModel)
   span.mark('servers.built')
   span.setMetadata('mcpCount', Object.keys(result.mcpServers).length)
   span.setMetadata('apiCount', Object.keys(result.apiServers).length)
@@ -1035,7 +1037,6 @@ export class SessionManager {
    * Reinitialize authentication environment variables.
    *
    * Uses the default LLM connection to determine which credentials to set.
-   * Falls back to legacy credentials (from getAuthState) for backwards compatibility.
    *
    * @param connectionSlug - Optional connection slug to use (overrides default)
    */
@@ -1046,7 +1047,7 @@ export class SessionManager {
       // Get the connection to use (explicit parameter or default)
       const slug = connectionSlug || getDefaultLlmConnection()
       if (!slug) {
-        sessionLog.warn('No LLM connection slug available, using legacy auth')
+        sessionLog.warn('No LLM connection slug available for reinitializeAuth')
       }
       const connection = slug ? getLlmConnection(slug) : null
 
@@ -1056,29 +1057,9 @@ export class SessionManager {
       delete process.env.ANTHROPIC_BASE_URL
 
       if (!connection) {
-        // Fallback to legacy behavior via getAuthState
-        sessionLog.info(`No LLM connection found for slug: ${slug}, using legacy auth`)
-        const authState = await getAuthState()
-        const { billing } = authState
-        // Get baseUrl from default connection if available
-        const defaultConnSlug = getDefaultLlmConnection()
-        const defaultConn = defaultConnSlug ? getLlmConnection(defaultConnSlug) : null
-        const customBaseUrl = defaultConn?.baseUrl
-
-        if (customBaseUrl) {
-          process.env.ANTHROPIC_BASE_URL = customBaseUrl
-          if (billing.apiKey) {
-            process.env.ANTHROPIC_API_KEY = billing.apiKey
-          } else {
-            process.env.ANTHROPIC_API_KEY = 'not-needed'
-          }
-        } else if (billing.type === 'oauth_token' && billing.claudeOAuthToken) {
-          process.env.CLAUDE_CODE_OAUTH_TOKEN = billing.claudeOAuthToken
-        } else if (billing.apiKey) {
-          process.env.ANTHROPIC_API_KEY = billing.apiKey
-        } else {
-          sessionLog.error('No authentication configured!')
-        }
+        sessionLog.error(`No LLM connection found for slug: ${slug}`)
+        resetSummarizationClient()
+        return
       } else {
         sessionLog.info(`Reinitializing auth for connection: ${slug} (${connection.authType})`)
 
@@ -1089,7 +1070,7 @@ export class SessionManager {
 
         // Set credentials based on connection auth type
         // Note: slug is guaranteed non-null here since connection was found
-        if (connection.authType === 'api_key') {
+        if (connection.authType === 'api_key' || connection.authType === 'api_key_with_endpoint' || connection.authType === 'bearer_token') {
           const apiKey = await manager.getLlmApiKey(slug!)
           if (apiKey) {
             process.env.ANTHROPIC_API_KEY = apiKey
@@ -1103,8 +1084,8 @@ export class SessionManager {
           }
         } else if (connection.authType === 'oauth') {
           // For Anthropic OAuth, use getValidClaudeOAuthToken which handles refresh
-          if (connection.providerType === 'anthropic' || slug === 'claude-max') {
-            const tokenResult = await getValidClaudeOAuthToken()
+          if (connection.providerType === 'anthropic') {
+            const tokenResult = await getValidClaudeOAuthToken(slug!)
             if (tokenResult.accessToken) {
               process.env.CLAUDE_CODE_OAUTH_TOKEN = tokenResult.accessToken
               sessionLog.info(`Set refreshed OAuth token for connection: ${slug}`)
@@ -1187,6 +1168,12 @@ export class SessionManager {
       sessionLog.info('Setting executable:', bundledBunPath)
       setExecutable(bundledBunPath)
     }
+
+    // Backfill missing `models` arrays on existing LLM connections
+    migrateLegacyLlmConnectionsConfig()
+
+    // Fix defaultLlmConnection if it points to a non-existent connection
+    migrateOrphanedDefaultConnections()
 
     // Migrate legacy credentials to LLM connection format (one-time migration)
     // This ensures credentials saved before LLM connections are available via the new system
@@ -1561,6 +1548,12 @@ export class SessionManager {
           { type: 'source_bearer', workspaceId: wsId, sourceId: request.sourceSlug },
           { value: response.value! }
         )
+      } else if (request.mode === 'multi-header') {
+        // Store multi-header credentials as JSON { "DD-API-KEY": "...", "DD-APPLICATION-KEY": "..." }
+        await credManager.set(
+          { type: 'source_apikey', workspaceId: wsId, sourceId: request.sourceSlug },
+          { value: JSON.stringify(response.headers) }
+        )
       } else {
         // header or query - both use API key storage
         await credManager.set(
@@ -1801,10 +1794,11 @@ export class SessionManager {
     let resolvedModel = options?.model || storedSession.model || defaultModel
 
     // Ensure model matches the connection's provider (e.g. don't send Claude model to Codex)
+    // Fall back to connection's default model instead of hardcoded constants
     if (resolvedModel && sessionProvider === 'openai' && !isCodexModel(resolvedModel)) {
-      resolvedModel = DEFAULT_CODEX_MODEL
+      resolvedModel = sessionConnection?.defaultModel ?? resolvedModel
     } else if (resolvedModel && sessionProvider === 'anthropic' && isCodexModel(resolvedModel)) {
-      resolvedModel = DEFAULT_MODEL
+      resolvedModel = sessionConnection?.defaultModel ?? resolvedModel
     }
 
     // Log mini agent session creation
@@ -2047,7 +2041,7 @@ export class SessionManager {
    * 1. session.llmConnection (locked after first message)
    * 2. workspace.defaults.defaultLlmConnection
    * 3. global defaultLlmConnection
-   * 4. fallback: legacy authType detection
+   * 4. fallback: no connection configured
    */
   private async getOrCreateAgent(managed: ManagedSession): Promise<AgentInstance> {
     if (!managed.agent) {
@@ -2094,14 +2088,6 @@ export class SessionManager {
         }
       }
 
-      // Auto-detect provider from model if it's a Codex model
-      // This ensures Codex models (gpt-5.x-codex) always use the OpenAI/Codex backend
-      // even if the connection is set to Anthropic
-      if (managed.model && isCodexModel(managed.model) && provider !== 'openai') {
-        sessionLog.info(`Auto-switching to OpenAI provider for Codex model "${managed.model}" (was: ${provider})`)
-        provider = 'openai'
-      }
-
       // Set session directory for tool metadata cross-process sharing.
       // The SDK subprocess reads CRAFT_SESSION_DIR to write tool-metadata.json;
       // the main process reads it via toolMetadataStore.setSessionDir().
@@ -2112,10 +2098,10 @@ export class SessionManager {
       // Create the appropriate backend based on provider
       if (provider === 'openai') {
         // Codex backend - uses app-server protocol
-        // Use connection's default model, or session model, or fallback to DEFAULT_CODEX_MODEL
-        // Safety: ensure the resolved model is actually a Codex model (not a Claude model from stale config)
-        const rawCodexModel = managed.model || connection?.defaultModel || DEFAULT_CODEX_MODEL
-        const codexModel = isCodexModel(rawCodexModel) ? rawCodexModel : DEFAULT_CODEX_MODEL
+        // Model from session > connection default (connection always has defaultModel via backfill)
+        // Safety: ensure the resolved model is actually a Codex model (not a Claude model from stale session data)
+        const rawCodexModel = managed.model || connection?.defaultModel!
+        const codexModel = isCodexModel(rawCodexModel) ? rawCodexModel : connection?.defaultModel!
 
         // Set up per-session Codex configuration (MCP servers, etc.)
         // This creates .codex-home/config.toml in the session folder
@@ -2133,6 +2119,7 @@ export class SessionManager {
           authType: authType || 'oauth',
           workspace: managed.workspace,
           model: codexModel,
+          miniModel: connection ? getMiniModel(connection) : undefined,
           thinkingLevel: managed.thinkingLevel,
           codexHome, // Per-session config directory
           session: {
@@ -2217,13 +2204,19 @@ export class SessionManager {
         }
       } else {
         // Claude backend - uses Anthropic SDK
-        // Model resolution: session > connection default > global config > DEFAULT_MODEL
-        const claudeModel = resolveModelId(
-          managed.model || connection?.defaultModel || config?.model || DEFAULT_MODEL
-        )
+        // CRITICAL: Set env vars for this session's connection BEFORE creating the agent.
+        // The SDK subprocess inherits env vars at spawn time, so we must ensure
+        // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_BASE_URL
+        // are set for the correct connection, not whatever was last initialized.
+        if (connection) {
+          await this.reinitializeAuth(connection.slug)
+        }
+
+        // Model resolution: session > connection default (connection always has defaultModel via backfill)
+        const resolvedModel = managed.model || connection?.defaultModel!
         managed.agent = new CraftAgent({
           workspace: managed.workspace,
-          model: claudeModel,
+          model: resolvedModel,
           // Initialize thinking level at construction to avoid race conditions
           thinkingLevel: managed.thinkingLevel,
           isHeadless: !AGENT_FLAGS.defaultModesEnabled,
@@ -2390,6 +2383,7 @@ export class SessionManager {
             authDescription: request.description,
             authHint: request.hint,
             authHeaderName: request.headerName,
+            authHeaderNames: request.headerNames,
             authSourceUrl: request.sourceUrl,
             authPasswordRequired: request.passwordRequired,
           }),
@@ -3102,34 +3096,7 @@ export class SessionManager {
 
     // Resolve provider and credentials based on session's LLM connection
     // This ensures title generation uses the same provider as the session
-    let titleOptions: TitleGeneratorOptions | undefined
-    if (managed.llmConnection) {
-      const connection = getLlmConnection(managed.llmConnection)
-      if (connection?.providerType === 'openai') {
-        sessionLog.info(`refreshTitle: Using OpenAI provider for session ${sessionId}`)
-        const credentialManager = getCredentialManager()
-
-        // Get credentials based on connection auth type
-        let apiKey: string | undefined
-        let accessToken: string | undefined
-
-        if (connection.authType === 'api_key') {
-          apiKey = await credentialManager.getLlmApiKey(managed.llmConnection) ?? undefined
-        } else if (connection.authType === 'oauth') {
-          const oauth = await credentialManager.getLlmOAuth(managed.llmConnection)
-          accessToken = oauth?.accessToken
-        }
-
-        if (apiKey || accessToken) {
-          titleOptions = {
-            provider: 'openai',
-            credentials: { apiKey, accessToken },
-          }
-        } else {
-          sessionLog.warn(`refreshTitle: No OpenAI credentials found for connection ${managed.llmConnection}`)
-        }
-      }
-    }
+    const titleOptions = await this.buildTitleOptions(managed.llmConnection)
 
     sessionLog.info(`refreshTitle: Calling regenerateSessionTitle with provider=${titleOptions?.provider ?? 'anthropic'}...`)
 
@@ -3228,11 +3195,11 @@ export class SessionManager {
       await updateSessionMetadata(managed.workspace.rootPath, sessionId, updates)
       // Update agent model if it already exists (takes effect on next query)
       if (managed.agent) {
-        // Fallback chain: session model > workspace default > global config > DEFAULT_MODEL
+        // Fallback chain: session model > workspace default > connection default
         const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
-        const effectiveModel = model ?? wsConfig?.defaults?.model ?? loadStoredConfig()?.model ?? DEFAULT_MODEL
-        const resolvedModel = resolveModelId(effectiveModel)
-        managed.agent.setModel(resolvedModel)
+        const sessionConn = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
+        const effectiveModel = model ?? wsConfig?.defaults?.model ?? sessionConn?.defaultModel!
+        managed.agent.setModel(effectiveModel)
       }
       // Notify renderer of the model change
       this.sendEvent({ type: 'session_model_changed', sessionId, model }, managed.workspace.id)
@@ -3415,8 +3382,16 @@ export class SessionManager {
           title: initialTitle,
         }, managed.workspace.id)
 
+        // Resolve the connection for title generation BEFORE the agent is created
+        // (agent creation sets managed.llmConnection, but runs concurrently
+        // and may not complete before generateTitle reads it)
+        const titleConnection = managed.llmConnection ?? resolveSessionConnection(
+          undefined,
+          loadWorkspaceConfig(managed.workspace.rootPath)?.defaults?.defaultLlmConnection
+        )?.slug
+
         // Generate AI title asynchronously (will update the initial title)
-        this.generateTitle(managed, message)
+        this.generateTitle(managed, message, titleConnection)
       }
     }
 
@@ -4064,13 +4039,92 @@ To view this task's output:
   }
 
   /**
+   * Build title generation options based on a session's LLM connection.
+   * Resolves provider type, credentials, and model override from the connection config.
+   */
+  private async buildTitleOptions(llmConnection: string | undefined): Promise<(TitleGeneratorOptions & { modelOverride?: string }) | undefined> {
+    if (!llmConnection) {
+      sessionLog.info(`[buildTitleOptions] No connection specified, skipping`)
+      return undefined
+    }
+
+    const connection = getLlmConnection(llmConnection)
+    if (!connection) {
+      sessionLog.info(`[buildTitleOptions] Connection '${llmConnection}' not found`)
+      return undefined
+    }
+
+    if (connection.providerType === 'openai' || connection.providerType === 'openai_compat') {
+      const credentialManager = getCredentialManager()
+      let apiKey: string | undefined
+      let accessToken: string | undefined
+
+      if (connection.authType === 'api_key' || connection.authType === 'api_key_with_endpoint' || connection.authType === 'bearer_token') {
+        apiKey = await credentialManager.getLlmApiKey(llmConnection) ?? undefined
+      } else if (connection.authType === 'oauth') {
+        const oauth = await credentialManager.getLlmOAuth(llmConnection)
+        if (oauth?.accessToken) {
+          // Check if token is expired and refresh if needed (ChatGPT Plus tokens expire after ~1h)
+          const isExpired = oauth.expiresAt
+            ? Date.now() > oauth.expiresAt - 5 * 60 * 1000
+            : !!oauth.refreshToken
+
+          if (isExpired && oauth.refreshToken) {
+            try {
+              const { refreshChatGptTokens } = await import('@craft-agent/shared/auth/chatgpt-oauth')
+              const refreshed = await refreshChatGptTokens(oauth.refreshToken)
+              await credentialManager.setLlmOAuth(llmConnection, {
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                expiresAt: refreshed.expiresAt,
+                idToken: refreshed.idToken,
+              })
+              accessToken = refreshed.accessToken
+              sessionLog.info(`[buildTitleOptions] Refreshed ChatGPT Plus OAuth token for title generation`)
+            } catch (error) {
+              sessionLog.warn(`[buildTitleOptions] Failed to refresh ChatGPT Plus token:`, error)
+              accessToken = oauth.accessToken
+            }
+          } else {
+            accessToken = oauth.accessToken
+          }
+        }
+      }
+
+      if (apiKey || accessToken) {
+        const model = getSummarizationModel(connection)
+        sessionLog.info(`[buildTitleOptions] OpenAI provider ready: model=${model}, authType=${apiKey ? 'api_key' : 'oauth'}, baseUrl=${connection.baseUrl ?? '(default)'}`)
+        return {
+          provider: 'openai',
+          credentials: { apiKey, accessToken },
+          summarizationModel: model,
+          baseUrl: connection.baseUrl,
+        }
+      }
+      sessionLog.info(`[buildTitleOptions] No credentials found for OpenAI connection '${llmConnection}'`)
+      return undefined
+    }
+
+    sessionLog.info(`[buildTitleOptions] Anthropic provider ready: model=${connection.defaultModel ?? '(default)'}, summarizationModel=${getSummarizationModel(connection)}`)
+    return {
+      provider: 'anthropic',
+      modelOverride: connection.defaultModel ?? undefined,
+      summarizationModel: getSummarizationModel(connection),
+    }
+  }
+
+  /**
    * Generate an AI title for a session from the user's first message.
    * Called asynchronously when the first user message is received.
    */
-  private async generateTitle(managed: ManagedSession, userMessage: string): Promise<void> {
-    sessionLog.info(`Starting title generation for session ${managed.id}`)
+  private async generateTitle(managed: ManagedSession, userMessage: string, connectionOverride?: string): Promise<void> {
+    const resolvedConnection = connectionOverride ?? managed.llmConnection
+    sessionLog.info(`[generateTitle] Starting for session ${managed.id}, connection=${resolvedConnection ?? '(none)'}`)
     try {
-      const title = await generateSessionTitle(userMessage)
+      const titleOptions = await this.buildTitleOptions(resolvedConnection)
+      sessionLog.info(`[generateTitle] Options: provider=${titleOptions?.provider ?? '(none)'}, model=${titleOptions?.summarizationModel ?? '(default)'}, baseUrl=${titleOptions?.baseUrl ?? '(default)'}`)
+
+      const title = await generateSessionTitle(userMessage, titleOptions)
       if (title) {
         managed.name = title
         this.persistSession(managed)
@@ -4428,8 +4482,9 @@ To view this task's output:
           setImmediate(async () => {
             try {
               // 1. Refresh auth (this will refresh the OAuth token if expired)
+              // Pass the session's connection slug so we refresh the right credentials
               sessionLog.info(`[auth-retry] Refreshing auth for session ${sessionId}`)
-              await this.reinitializeAuth()
+              await this.reinitializeAuth(managed.llmConnection)
 
               // 2. Destroy the agent so it gets recreated with fresh token
               // The SDK subprocess has the old token cached in its env, so we must restart it
@@ -4725,41 +4780,6 @@ To view this task's output:
       }, workspaceId)
       this.pendingDeltas.delete(sessionId)
     }
-  }
-
-  /**
-   * Get backend capabilities for UI adaptation.
-   * Returns capabilities from any active session's agent, or null if no agents exist.
-   *
-   * The capabilities include available models, thinking levels, and feature support.
-   * UI uses this to adapt model/thinking selectors based on the current backend.
-   */
-  getCapabilities(sessionId?: string): ReturnType<CraftAgent['capabilities']> | ReturnType<CodexBackend['capabilities']> | null {
-    // If sessionId provided, return capabilities for that specific session
-    if (sessionId) {
-      const managed = this.sessions.get(sessionId)
-      if (managed) {
-        // If agent exists, use its capabilities (most accurate)
-        if (managed.agent) {
-          return managed.agent.capabilities()
-        }
-        // No agent yet - derive capabilities from session's LLM connection
-        if (managed.llmConnection) {
-          const connection = getLlmConnection(managed.llmConnection)
-          if (connection) {
-            return getStaticCapabilities(connection.providerType)
-          }
-        }
-      }
-    }
-    // Fallback: return capabilities from any active session (for backward compat)
-    for (const [_, managed] of this.sessions) {
-      if (managed.agent) {
-        return managed.agent.capabilities()
-      }
-    }
-    // No active agents - return null (UI will fall back to hardcoded values)
-    return null
   }
 
   /**

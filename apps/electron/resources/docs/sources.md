@@ -245,7 +245,8 @@ Each source folder contains:
   "api": {
     "baseUrl": "https://api.example.com/",  // MUST have trailing slash
     "authType": "bearer" | "header" | "query" | "basic" | "none",
-    "headerName": "X-API-Key",      // For header auth
+    "headerName": "X-API-Key",      // For single header auth
+    "headerNames": ["X-API-KEY", "X-APP-KEY"],  // For multi-header auth (2+ headers)
     "queryParam": "api_key",         // For query auth
     "authScheme": "Bearer"           // For bearer auth (default: "Bearer")
   },
@@ -438,6 +439,46 @@ REST APIs become flexible tools that Claude can call.
   }
 }
 ```
+
+**Multi-header authentication:**
+
+Some APIs require multiple authentication headers simultaneously. For example, Datadog requires both `DD-API-KEY` and `DD-APPLICATION-KEY`. Use the `headerNames` array to specify all required headers:
+
+```json
+{
+  "type": "api",
+  "provider": "datadog",
+  "api": {
+    "baseUrl": "https://api.datadoghq.com/api/",
+    "authType": "header",
+    "headerNames": ["DD-API-KEY", "DD-APPLICATION-KEY"],
+    "testEndpoint": {
+      "method": "GET",
+      "path": "v1/validate"
+    }
+  }
+}
+```
+
+When `headerNames` is specified:
+- Each header name gets its own input field during authentication
+- All header values are stored together as a JSON object
+- Each header is added to every API request
+
+To prompt for multi-header credentials:
+```typescript
+source_credential_prompt({
+  sourceSlug: "datadog",
+  mode: "multi-header",
+  headerNames: ["DD-API-KEY", "DD-APPLICATION-KEY"],
+  description: "Enter your Datadog API credentials"
+})
+```
+
+Common multi-header use cases:
+- **Datadog**: `DD-API-KEY` + `DD-APPLICATION-KEY`
+- **APIs with identity + signing keys**: Separate API key and secret
+- **Services with app + user credentials**: Application key plus user token
 
 **Basic auth with optional password:**
 

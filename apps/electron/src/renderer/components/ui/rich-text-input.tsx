@@ -516,11 +516,9 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
         loadSourceIcon({ config: source.config, workspaceId })
       }
 
-      // Preload skill icons
+      // Preload skill icons (handles emoji, URL, file, and auto-discovery)
       for (const skill of skills) {
-        if (skill.iconPath) {
-          loadSkillIcon({ slug: skill.slug, iconPath: skill.iconPath }, workspaceId)
-        }
+        loadSkillIcon(skill, workspaceId)
       }
     }, [sources, skills, workspaceId])
 

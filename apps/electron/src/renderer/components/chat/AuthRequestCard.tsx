@@ -177,6 +177,7 @@ export function AuthRequestCard({ message, onRespondToCredential, sessionId, isI
     authStatus,
     authCredentialMode,
     authHeaderName,
+    authHeaderNames,
     authLabels,
     authDescription,
     authHint,
@@ -187,10 +188,26 @@ export function AuthRequestCard({ message, onRespondToCredential, sessionId, isI
     authWorkspace,
   } = message
 
+  // Multi-header state: { "DD-API-KEY": "", "DD-APPLICATION-KEY": "" }
+  const [headerValues, setHeaderValues] = useState<Record<string, string>>(() => {
+    const initial: Record<string, string> = {}
+    if (authHeaderNames) {
+      for (const name of authHeaderNames) {
+        initial[name] = ''
+      }
+    }
+    return initial
+  })
+
   const isBasicAuth = authCredentialMode === 'basic'
+  const isMultiHeader = authCredentialMode === 'multi-header'
   const passwordRequired = authPasswordRequired ?? true  // default true for backward compatibility
+
+  // Validation logic
   const isValid = isBasicAuth
     ? validateBasicAuthCredentials(username, password, passwordRequired)
+    : isMultiHeader
+    ? authHeaderNames?.every(name => headerValues[name]?.trim().length > 0) ?? false
     : value.trim().length > 0
 
   const handleSubmit = useCallback(() => {
@@ -205,6 +222,17 @@ export function AuthRequestCard({ message, onRespondToCredential, sessionId, isI
         password: getPasswordValue(password, passwordRequired),
         cancelled: false
       })
+    } else if (isMultiHeader) {
+      // Trim all header values
+      const trimmedHeaders: Record<string, string> = {}
+      for (const [key, val] of Object.entries(headerValues)) {
+        trimmedHeaders[key] = val.trim()
+      }
+      onRespondToCredential(sessionId, authRequestId, {
+        type: 'credential',
+        headers: trimmedHeaders,
+        cancelled: false
+      })
     } else {
       onRespondToCredential(sessionId, authRequestId, {
         type: 'credential',
@@ -212,7 +240,7 @@ export function AuthRequestCard({ message, onRespondToCredential, sessionId, isI
         cancelled: false
       })
     }
-  }, [isBasicAuth, username, password, value, isValid, onRespondToCredential, sessionId, authRequestId])
+  }, [isBasicAuth, isMultiHeader, username, password, value, headerValues, isValid, onRespondToCredential, sessionId, authRequestId, passwordRequired])
 
   const handleCancel = useCallback(() => {
     if (!authRequestId || !onRespondToCredential) return
@@ -448,6 +476,44 @@ export function AuthRequestCard({ message, onRespondToCredential, sessionId, isI
                 </button>
               </div>
             </div>
+          </>
+        ) : isMultiHeader && authHeaderNames ? (
+          /* Multi-header fields (e.g., Datadog DD-API-KEY + DD-APPLICATION-KEY) */
+          <>
+            {authHeaderNames.map((headerName, index) => (
+              <div key={headerName} className="space-y-1.5">
+                <Label htmlFor={`auth-header-${authRequestId}-${index}`} className="text-xs">
+                  {headerName}
+                </Label>
+                <div className="relative">
+                  <Key className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id={`auth-header-${authRequestId}-${index}`}
+                    name={headerName}
+                    autoComplete="off"
+                    type={showPassword ? 'text' : 'password'}
+                    value={headerValues[headerName] || ''}
+                    onChange={(e) => setHeaderValues(prev => ({
+                      ...prev,
+                      [headerName]: e.target.value
+                    }))}
+                    onKeyDown={handleKeyDown}
+                    className="pl-9 pr-9"
+                    placeholder={`Enter ${headerName}`}
+                    autoFocus={index === 0}
+                    disabled={isSubmitting}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+            ))}
           </>
         ) : (
           /* Single credential field (API key, bearer token) */

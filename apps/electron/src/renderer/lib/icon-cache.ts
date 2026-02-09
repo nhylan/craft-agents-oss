@@ -44,6 +44,7 @@ interface SourceConfig {
 interface SkillConfig {
   slug: string
   iconPath?: string
+  metadata?: { icon?: string }
 }
 
 // ============================================================================
@@ -291,42 +292,68 @@ export function getSourceIconSync(workspaceId: string, slug: string): string | n
 /**
  * Load a skill icon into the cache.
  *
- * @returns Promise resolving to the icon data URL
+ * Resolution priority (mirrors loadSourceIcon):
+ * 1. Emoji in metadata.icon → Return emoji marker
+ * 2. URL in metadata.icon → Return URL directly
+ * 3. Known iconPath → Load from file
+ * 4. Auto-discover skills/{slug}/icon.{svg,png} → Load from file
+ *
+ * @returns Promise resolving to icon URL, emoji marker, or null
  */
 export async function loadSkillIcon(
   skill: SkillConfig,
   workspaceId: string,
 ): Promise<string | null> {
-  const iconPath = skill.iconPath
-  if (!iconPath) return null
-
   const cacheKey = `${workspaceId}:${skill.slug}`
 
   // Check cache first
   const cached = skillIconCache.get(cacheKey)
   if (cached) return cached
 
-  // Extract relative path from absolute icon path
-  // iconPath is absolute, we need to get the skills/slug/icon.ext part
-  const skillsMatch = iconPath.match(/skills\/([^/]+)\/(.+)$/)
-  if (!skillsMatch) return null
+  const iconValue = skill.metadata?.icon
 
-  const relativePath = `skills/${skillsMatch[1]}/${skillsMatch[2]}`
-
-  try {
-    const result = await window.electronAPI.readWorkspaceImage(workspaceId, relativePath)
-    // For SVG, theme and convert to data URL
-    // This injects foreground color since currentColor doesn't work in background-image
-    let url = result
-    if (relativePath.endsWith('.svg')) {
-      url = svgToThemedDataUrl(result)
-    }
-    skillIconCache.set(cacheKey, url)
-    return url
-  } catch (error) {
-    console.error(`[IconCache] Failed to load skill icon ${relativePath}:`, error)
-    return null
+  // Priority 1: Emoji icon - return marker for caller to render as text
+  if (iconValue && isEmoji(iconValue)) {
+    const emojiMarker = `${EMOJI_ICON_PREFIX}${iconValue}`
+    skillIconCache.set(cacheKey, emojiMarker)
+    return emojiMarker
   }
+
+  // Priority 2: URL in metadata - return URL directly
+  if (iconValue && (iconValue.startsWith('http://') || iconValue.startsWith('https://'))) {
+    skillIconCache.set(cacheKey, iconValue)
+    return iconValue
+  }
+
+  // Priority 3: Known icon path - load file
+  if (skill.iconPath) {
+    const skillsMatch = skill.iconPath.match(/skills\/([^/]+)\/(.+)$/)
+    if (skillsMatch) {
+      const relativePath = `skills/${skillsMatch[1]}/${skillsMatch[2]}`
+      const loaded = await loadWorkspaceIcon(workspaceId, relativePath)
+      if (loaded) {
+        skillIconCache.set(cacheKey, loaded)
+        return loaded
+      }
+    }
+  }
+
+  // Priority 4: Auto-discover icon files (when no explicit icon configured)
+  if (!iconValue) {
+    const svgIcon = await loadWorkspaceIcon(workspaceId, `skills/${skill.slug}/icon.svg`)
+    if (svgIcon) {
+      skillIconCache.set(cacheKey, svgIcon)
+      return svgIcon
+    }
+
+    const pngIcon = await loadWorkspaceIcon(workspaceId, `skills/${skill.slug}/icon.png`)
+    if (pngIcon) {
+      skillIconCache.set(cacheKey, pngIcon)
+      return pngIcon
+    }
+  }
+
+  return null
 }
 
 /**

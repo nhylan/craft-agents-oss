@@ -22,18 +22,15 @@ import { type PermissionMode, shouldAllowToolInMode } from './mode-manager.ts';
 import type { LoadedSource } from '../sources/types.ts';
 
 import type {
-  AgentCapabilities,
   BackendConfig,
   ChatOptions,
   SdkMcpServerConfig,
-  ModelDefinition,
-  ThinkingLevelDefinition,
 } from './backend/types.ts';
 import { AbortReason } from './backend/types.ts';
 import type { Workspace } from '../config/storage.ts';
 
 // Import models from centralized registry
-import { OPENAI_MODELS, DEFAULT_CODEX_MODEL, getModelById } from '../config/models.ts';
+import { DEFAULT_CODEX_MODEL, getModelById, getModelIdByShortName } from '../config/models.ts';
 
 // BaseAgent provides common functionality
 import { BaseAgent } from './base-agent.ts';
@@ -68,8 +65,14 @@ import { parseError, type AgentError } from './errors.ts';
 // Session storage for plans folder path
 import { getSessionPlansPath } from '../sessions/storage.ts';
 
+// Mention parsing for skill extraction
+import { parseMentions, stripAllMentions } from '../mentions/index.ts';
+
+// Skills loader for resolving skill paths
+import { loadWorkspaceSkills } from '../skills/storage.ts';
+
 // Path utilities for cross-platform normalization
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 // System prompt for Craft Agent context
 import { getSystemPrompt } from '../prompts/system.ts';
@@ -104,24 +107,34 @@ import type {
 // Models and DEFAULT_CODEX_MODEL imported from centralized registry (config/models.ts)
 
 /**
- * Resolve abstract Codex model IDs to actual versioned model slugs.
+ * Resolve Codex model IDs to the correct versioned slug for the auth type.
  *
- * The model registry uses abstract IDs (e.g. 'codex', 'codex-mini') so the UI
- * doesn't expose version numbers. This function maps them to the real model
- * slugs that the Codex app-server expects, based on the connection's auth type.
- *
- * - OAuth (ChatGPT Plus/Pro) users get the latest models (gpt-5.3-codex)
- * - API key users get the models available on the platform API (gpt-5.2-codex)
+ * The registry uses real OpenAI model slugs (gpt-5.3-codex, gpt-5.1-codex-mini).
+ * This function handles:
+ * - API key downgrade: gpt-5.3-codex → gpt-5.2-codex (5.3 is ChatGPT-sub-only)
+ * - Backward compat: old abstract IDs (codex, codex-mini) from existing sessions
  */
-function resolveCodexModelId(abstractId: string, authType?: string): string {
+function resolveCodexModelId(modelId: string, authType?: string): string {
   const isApiKey = authType === 'api_key' || authType === 'api_key_with_endpoint';
-  const modelMap: Record<string, { api: string; sub: string }> = {
-    'codex':      { api: 'gpt-5.2-codex',     sub: 'gpt-5.3-codex' },
-    'codex-mini': { api: 'gpt-5.1-codex-mini', sub: 'gpt-5.1-codex-mini' },
+
+  // Registry-based model IDs (derived, not hardcoded)
+  const codexModelId = getModelIdByShortName('Codex');
+  const codexMiniModelId = getModelIdByShortName('Codex Mini');
+
+  // Backward compat: map old abstract IDs to real registry slugs
+  const legacyMap: Record<string, { api: string; sub: string }> = {
+    'codex':      { api: 'gpt-5.2-codex', sub: codexModelId },  // API-only: 5.2 (not in registry)
+    'codex-mini': { api: codexMiniModelId, sub: codexMiniModelId },
   };
-  const entry = modelMap[abstractId];
-  if (!entry) return abstractId; // passthrough versioned or unknown IDs
-  return isApiKey ? entry.api : entry.sub;
+  const legacy = legacyMap[modelId];
+  if (legacy) return isApiKey ? legacy.api : legacy.sub;
+
+  // API key users: downgrade subscription-only model to API-available version
+  if (isApiKey && modelId === codexModelId) {
+    return 'gpt-5.2-codex';  // 5.3 requires ChatGPT subscription, 5.2 available via API
+  }
+
+  return modelId;
 }
 
 /**
@@ -132,30 +145,6 @@ const THINKING_TO_EFFORT: Record<ThinkingLevel, ReasoningEffort> = {
   think: 'medium',
   max: 'high',
 };
-
-/**
- * Codex thinking level definitions.
- */
-const CODEX_THINKING_LEVELS: ThinkingLevelDefinition[] = [
-  {
-    id: 'off',
-    name: 'Off',
-    description: 'Minimal reasoning effort',
-    budget: 'low',
-  },
-  {
-    id: 'think',
-    name: 'Think',
-    description: 'Medium reasoning effort',
-    budget: 'medium',
-  },
-  {
-    id: 'max',
-    name: 'Max',
-    description: 'Maximum reasoning effort',
-    budget: 'high',
-  },
-];
 
 // ============================================================
 // CodexAgent Implementation
@@ -245,11 +234,23 @@ export class CodexAgent extends BaseAgent {
    */
   onAuthRequest: ((request: AuthRequest) => void) | null = null;
 
+  /**
+   * Resolve the connection slug for credential routing.
+   * Uses connectionSlug from config (set by factory), falls back to session's llmConnection.
+   */
+  private get credentialSlug(): string {
+    const slug = this.config.connectionSlug ?? this.config.session?.llmConnection;
+    if (!slug) {
+      throw new Error('CodexAgent: connectionSlug is required for credential routing');
+    }
+    return slug;
+  }
+
   constructor(config: BackendConfig) {
     // Get context window from model definitions for base class
-    const modelDef = getModelById(config.model || DEFAULT_CODEX_MODEL);
+    const modelDef = getModelById(config.model!);
 
-    // Call BaseAgent constructor - handles all core module initialization
+    // Call BaseAgent constructor - handles all core module initialization (model from connection)
     super(config, DEFAULT_CODEX_MODEL, modelDef?.contextWindow);
 
     // Codex-specific initialization
@@ -1270,7 +1271,7 @@ export class CodexAgent extends BaseAgent {
 
         // After waiting, try to get fresh tokens and respond
         const credentialManager = getCredentialManager();
-        const storedCreds = await credentialManager.getLlmOAuth('codex');
+        const storedCreds = await credentialManager.getLlmOAuth(this.credentialSlug);
         if (storedCreds?.idToken && storedCreds?.accessToken) {
           await this.client?.respondToTokenRefresh(params.requestId, {
             idToken: storedCreds.idToken,
@@ -1302,7 +1303,7 @@ export class CodexAgent extends BaseAgent {
     try {
       // Get stored credentials
       const credentialManager = getCredentialManager();
-      const storedCreds = await credentialManager.getLlmOAuth('codex');
+      const storedCreds = await credentialManager.getLlmOAuth(this.credentialSlug);
 
       if (!storedCreds?.refreshToken) {
         this.debug('No refresh token available, requesting re-authentication');
@@ -1317,7 +1318,7 @@ export class CodexAgent extends BaseAgent {
 
       // Store both tokens properly - idToken and accessToken are separate!
       // OpenAI OIDC returns both: idToken (JWT for identity) and accessToken (for API access)
-      await credentialManager.setLlmOAuth('codex', {
+      await credentialManager.setLlmOAuth(this.credentialSlug, {
         accessToken: newTokens.accessToken,  // Store actual accessToken
         idToken: newTokens.idToken,           // Store idToken separately
         refreshToken: newTokens.refreshToken,
@@ -1357,7 +1358,7 @@ export class CodexAgent extends BaseAgent {
     // Store both tokens properly in credential manager
     // OpenAI OIDC returns both: idToken (JWT for identity) and accessToken (for API access)
     const credentialManager = getCredentialManager();
-    await credentialManager.setLlmOAuth('codex', {
+    await credentialManager.setLlmOAuth(this.credentialSlug, {
       accessToken: tokens.accessToken,  // Store actual accessToken
       idToken: tokens.idToken,           // Store idToken separately
       refreshToken: tokens.refreshToken,
@@ -1382,7 +1383,7 @@ export class CodexAgent extends BaseAgent {
   async tryInjectStoredChatGptTokens(): Promise<boolean> {
     try {
       const credentialManager = getCredentialManager();
-      const storedCreds = await credentialManager.getLlmOAuth('codex');
+      const storedCreds = await credentialManager.getLlmOAuth(this.credentialSlug);
 
       if (!storedCreds) {
         this.debug('No stored ChatGPT credentials found');
@@ -1444,7 +1445,7 @@ export class CodexAgent extends BaseAgent {
 
     // Store API key in credential manager for persistence
     const credentialManager = getCredentialManager();
-    await credentialManager.setLlmApiKey('codex-api', apiKey);
+    await credentialManager.setLlmApiKey(this.credentialSlug, apiKey);
 
     // Inject into Codex app-server
     await client.accountLoginWithApiKey(apiKey);
@@ -1462,7 +1463,7 @@ export class CodexAgent extends BaseAgent {
   async tryInjectStoredApiKey(): Promise<boolean> {
     try {
       const credentialManager = getCredentialManager();
-      const apiKey = await credentialManager.getLlmApiKey('codex-api');
+      const apiKey = await credentialManager.getLlmApiKey(this.credentialSlug);
 
       if (!apiKey) {
         this.debug('No stored OpenAI API key found');
@@ -1554,10 +1555,10 @@ export class CodexAgent extends BaseAgent {
       // Start or resume thread
       const permissionMode = this.permissionManager.getPermissionMode();
 
-      // Mini agent model selection: use codex-mini for faster, cheaper responses
+      // Mini agent model selection: use last model from connection (mini/summarization model)
       // resolveCodexModelId maps abstract IDs to actual versioned slugs based on auth type
       const model = resolveCodexModelId(
-        miniConfig.enabled ? 'codex-mini' : this._model,
+        miniConfig.enabled ? (this.config.miniModel ?? DEFAULT_CODEX_MODEL) : this._model,
         this.config.authType,
       );
       if (this.codexThreadId) {
@@ -1567,8 +1568,8 @@ export class CodexAgent extends BaseAgent {
             threadId: this.codexThreadId,
             history: null,
             path: null,
-            // Mini agent: use codex-mini model for resumed threads too
-            model: miniConfig.enabled ? resolveCodexModelId('codex-mini', this.config.authType) : null,
+            // Mini agent: use last model from connection for resumed threads too
+            model: miniConfig.enabled ? resolveCodexModelId(this.config.miniModel ?? DEFAULT_CODEX_MODEL, this.config.authType) : null,
             modelProvider: null,
             cwd: null,
             approvalPolicy: null,
@@ -1817,12 +1818,39 @@ export class CodexAgent extends BaseAgent {
   /**
    * Build user input from message and attachments.
    * Mirrors ClaudeAgent's buildSDKUserMessage() for full context parity.
+   *
+   * Also extracts [skill:...] mentions from the message and adds them as
+   * skill UserInput items, which is how Codex discovers and loads skills.
    */
   private buildUserInput(
     message: string,
     attachments?: FileAttachment[]
   ): UserInput[] {
     const input: UserInput[] = [];
+
+    // ============================================================
+    // SKILL MENTION EXTRACTION
+    // ============================================================
+
+    // Parse [skill:workspaceId:slug] mentions from the message.
+    // Load workspace skills to match against and resolve paths.
+    const workspaceRoot = this.config.workspace.rootPath ?? this.workingDirectory;
+    const skills = loadWorkspaceSkills(workspaceRoot);
+    const skillSlugs = skills.map(s => s.slug);
+    const parsed = parseMentions(message, skillSlugs, []);
+
+    // Add matched skills as skill UserInput items.
+    // Codex loads the SKILL.md from the given path and injects its instructions.
+    for (const slug of parsed.skills) {
+      const skill = skills.find(s => s.slug === slug);
+      if (skill) {
+        input.push({ type: 'skill' as const, name: skill.slug, path: join(skill.path, 'SKILL.md') });
+      }
+    }
+
+    // Strip all [bracket] mentions from the message text.
+    // Codex doesn't understand [skill:...], [source:...] etc. annotations.
+    const cleanMessage = stripAllMentions(message);
 
     // ============================================================
     // CONTEXT INJECTION (matching ClaudeAgent)
@@ -1834,7 +1862,7 @@ export class CodexAgent extends BaseAgent {
     const contextParts = this.promptBuilder.buildContextParts(
       {
         plansFolderPath: getSessionPlansPath(
-          this.config.workspace.rootPath ?? this.workingDirectory,
+          workspaceRoot,
           this._sessionId
         ),
       },
@@ -1872,11 +1900,11 @@ export class CodexAgent extends BaseAgent {
     // COMBINE INTO MESSAGE
     // ============================================================
 
-    // Combine: context + attachments + user message
+    // Combine: context + attachments + user message (with mentions stripped)
     const allParts = [
       ...contextParts,
       ...attachmentParts,
-      message,
+      cleanMessage,
     ].filter(Boolean);
 
     const fullMessage = allParts.join('\n\n');
@@ -2187,23 +2215,6 @@ export class CodexAgent extends BaseAgent {
       pending.resolve(decision);
       this.pendingApprovals.delete(requestId);
     }
-  }
-
-  // ============================================================
-  // Capabilities & State (Codex-specific overrides)
-  // ============================================================
-
-  capabilities(): AgentCapabilities {
-    return {
-      provider: 'openai',
-      models: OPENAI_MODELS,
-      thinkingLevels: CODEX_THINKING_LEVELS,
-      supportsPermissionCallbacks: true, // Now true with app-server!
-      supportsSubagentParents: false,
-      maxContextTokens: 256_000,
-      supportsMcp: true,
-      supportsResume: true, // Thread persistence
-    };
   }
 
   /**
