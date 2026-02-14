@@ -8,17 +8,10 @@
 import { createLogger } from '../../utils/debug.ts';
 import type { EventBus, BaseEventPayload } from '../event-bus.ts';
 import type { HookHandler, PromptHandlerOptions, HooksConfigProvider } from './types.ts';
-import type { HookEvent, PromptHookDefinition, PendingPrompt, AppEvent } from '../types.ts';
+import { APP_EVENTS, type HookEvent, type PromptHookDefinition, type PendingPrompt, type AppEvent } from '../types.ts';
 import { matcherMatches, buildEnvFromPayload, expandEnvVars, parsePromptReferences } from '../utils.ts';
 
 const log = createLogger('prompt-handler');
-
-// App events that support prompt hooks
-const APP_EVENTS: AppEvent[] = [
-  'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'StatusStateChange',
-  'SchedulerTick'
-];
 
 // ============================================================================
 // PromptHandler Implementation

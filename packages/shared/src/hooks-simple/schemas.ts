@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import type { ValidationIssue } from '../config/validators.ts';
+import { APP_EVENTS, AGENT_EVENTS } from './types.ts';
 
 // ============================================================================
 // Zod Schemas
@@ -38,14 +39,7 @@ export const HookMatcherSchema = z.object({
   hooks: z.array(HookDefinitionSchema).min(1, 'At least one hook required'),
 });
 
-export const VALID_EVENTS = [
-  // App events
-  'LabelAdd', 'LabelRemove', 'LabelConfigChange', 'PermissionModeChange', 'FlagChange', 'StatusStateChange', 'SchedulerTick',
-  // Agent/SDK events
-  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification',
-  'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'Stop',
-  'SubagentStart', 'SubagentStop', 'PreCompact', 'PermissionRequest', 'Setup',
-] as const;
+export const VALID_EVENTS = [...APP_EVENTS, ...AGENT_EVENTS] as const;
 
 export const HooksConfigSchema = z.object({
   version: z.number().optional(),
