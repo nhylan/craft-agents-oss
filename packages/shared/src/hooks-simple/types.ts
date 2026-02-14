@@ -9,43 +9,23 @@
 // ============================================================================
 
 /** App events - handled by Craft */
-export type AppEvent =
-  | 'LabelAdd'
-  | 'LabelRemove'
-  | 'LabelConfigChange'
-  | 'PermissionModeChange'
-  | 'FlagChange'
-  | 'TodoStateChange'
-  | 'SchedulerTick';
+export const APP_EVENTS = [
+  'LabelAdd', 'LabelRemove', 'LabelConfigChange',
+  'PermissionModeChange', 'FlagChange', 'StatusStateChange', 'SchedulerTick',
+] as const;
+
+export type AppEvent = (typeof APP_EVENTS)[number];
 
 /** Agent events - passed to Claude SDK */
-export type AgentEvent =
-  | 'PreToolUse'
-  | 'PostToolUse'
-  | 'PostToolUseFailure'
-  | 'Notification'
-  | 'UserPromptSubmit'
-  | 'SessionStart'
-  | 'SessionEnd'
-  | 'Stop'
-  | 'SubagentStart'
-  | 'SubagentStop'
-  | 'PreCompact'
-  | 'PermissionRequest'
-  | 'Setup';
-
-export type HookEvent = AppEvent | AgentEvent;
-
-export const APP_EVENTS: AppEvent[] = [
-  'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SchedulerTick'
-];
-
-export const AGENT_EVENTS: AgentEvent[] = [
+export const AGENT_EVENTS = [
   'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification',
   'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'Stop',
-  'SubagentStart', 'SubagentStop', 'PreCompact', 'PermissionRequest', 'Setup'
-];
+  'SubagentStart', 'SubagentStop', 'PreCompact', 'PermissionRequest', 'Setup',
+] as const;
+
+export type AgentEvent = (typeof AGENT_EVENTS)[number];
+
+export type HookEvent = AppEvent | AgentEvent;
 
 // ============================================================================
 // Hook Definitions

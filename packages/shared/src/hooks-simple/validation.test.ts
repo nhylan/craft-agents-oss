@@ -10,7 +10,7 @@ describe('validation', () => {
     it('should accept a valid config', () => {
       const config = {
         hooks: {
-          TodoStateChange: [{
+          StatusStateChange: [{
             matcher: 'done',
             hooks: [{ type: 'command', command: 'echo done' }],
           }],

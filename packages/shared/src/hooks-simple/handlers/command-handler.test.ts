@@ -108,9 +108,9 @@ describe('CommandHandler', () => {
       handler.dispose();
     });
 
-    it('should execute command for matching TodoStateChange event', async () => {
+    it('should execute command for matching StatusStateChange event', async () => {
       const configProvider = createMockConfigProvider({
-        TodoStateChange: [{
+        StatusStateChange: [{
           matcher: 'done',
           hooks: [{ type: 'command', command: 'echo state changed' }],
         }],
@@ -119,7 +119,7 @@ describe('CommandHandler', () => {
       const handler = new CommandHandler(createOptions(), configProvider);
       handler.subscribe(bus);
 
-      await bus.emit('TodoStateChange', {
+      await bus.emit('StatusStateChange', {
         workspaceId: 'test-workspace',
         timestamp: Date.now(),
         oldState: 'in_progress',

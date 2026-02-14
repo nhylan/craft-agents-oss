@@ -270,7 +270,7 @@ describe('HookSystem', () => {
       await system.dispose();
     });
 
-    it('should emit TodoStateChange event', async () => {
+    it('should emit StatusStateChange event', async () => {
       const system = new HookSystem({
         workspaceRootPath: tempDir,
         workspaceId: 'test-workspace',
@@ -286,8 +286,8 @@ describe('HookSystem', () => {
         todoState: 'done',
       });
 
-      expect(events).toContain('TodoStateChange');
-      expect(emitSpy).toHaveBeenCalledWith('TodoStateChange', expect.objectContaining({
+      expect(events).toContain('StatusStateChange');
+      expect(emitSpy).toHaveBeenCalledWith('StatusStateChange', expect.objectContaining({
         oldState: 'todo',
         newState: 'done',
       }));

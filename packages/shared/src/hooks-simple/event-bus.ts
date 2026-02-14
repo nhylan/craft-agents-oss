@@ -45,8 +45,8 @@ export interface FlagChangePayload extends BaseEventPayload {
   isFlagged: boolean;
 }
 
-/** Todo state change payload */
-export interface TodoStateChangePayload extends BaseEventPayload {
+/** Status state change payload */
+export interface StatusStateChangePayload extends BaseEventPayload {
   oldState: string;
   newState: string;
 }
@@ -81,7 +81,7 @@ export interface EventPayloadMap {
   LabelConfigChange: LabelConfigChangePayload;
   PermissionModeChange: PermissionModeChangePayload;
   FlagChange: FlagChangePayload;
-  TodoStateChange: TodoStateChangePayload;
+  StatusStateChange: StatusStateChangePayload;
   SchedulerTick: SchedulerTickPayload;
 
   // Agent events (generic payload)
