@@ -71,6 +71,7 @@ export class PromptHandler implements HookHandler {
     const env = buildEnvFromPayload(event, payload);
 
     // Process prompts
+    const eventSessionId = payload.sessionId;
     const pendingPrompts: PendingPrompt[] = [];
 
     for (const { prompt, labels, permissionMode } of promptHooks) {
@@ -84,7 +85,9 @@ export class PromptHandler implements HookHandler {
       const expandedLabels = labels?.map(label => expandEnvVars(label, env));
 
       pendingPrompts.push({
-        sessionId: this.options.sessionId,
+        sessionId: prompt.target === 'same-session'
+          ? eventSessionId
+          : this.options.sessionId,
         prompt: expandedPrompt,
         mentions: references.mentions,
         labels: expandedLabels,
