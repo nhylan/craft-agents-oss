@@ -1,9 +1,6 @@
 /**
  * Tests for the TodoStateChange → StatusStateChange rename and
  * backwards-compatibility layer.
- *
- * Written TDD-style — tests are added BEFORE the implementation so
- * they fail first, then pass once the production code catches up.
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
@@ -12,77 +9,65 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { HookSystem } from './hook-system.ts';
+import type { HookEvent } from './types.ts';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+let tempDir: string;
+let system: HookSystem;
+
+function writeHooksJson(hooks: Record<string, unknown[]>) {
+  writeFileSync(
+    join(tempDir, 'hooks.json'),
+    JSON.stringify({ hooks }),
+  );
+}
+
+function createSystem() {
+  system = new HookSystem({
+    workspaceRootPath: tempDir,
+    workspaceId: 'test-workspace',
+  });
+  return system;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 describe('StatusStateChange rename', () => {
-  let tempDir: string;
-
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'status-rename-test-'));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await system?.dispose();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  // ---- rename ----
+  // ---- new name works ----
 
-  it('accepts StatusStateChange as a hook event in hooks.json', async () => {
-    writeFileSync(join(tempDir, 'hooks.json'), JSON.stringify({
-      hooks: {
-        StatusStateChange: [{
-          matcher: 'done',
-          hooks: [{ type: 'command', command: 'echo done' }],
-        }],
-      },
-    }));
-
-    const system = new HookSystem({
-      workspaceRootPath: tempDir,
-      workspaceId: 'test-workspace',
+  it('accepts StatusStateChange as a hook event', () => {
+    writeHooksJson({
+      StatusStateChange: [{
+        matcher: 'done',
+        hooks: [{ type: 'command', command: 'echo done' }],
+      }],
     });
 
-    const matchers = system.getMatchersForEvent('StatusStateChange' as any);
+    const matchers = createSystem().getMatchersForEvent('StatusStateChange' as HookEvent);
     expect(matchers).toHaveLength(1);
     expect(matchers[0]?.matcher).toBe('done');
-
-    await system.dispose();
   });
 
-  it('does not accept bare TodoStateChange as a hook event', async () => {
-    writeFileSync(join(tempDir, 'hooks.json'), JSON.stringify({
-      hooks: {
-        TodoStateChange: [{
-          matcher: 'done',
-          hooks: [{ type: 'command', command: 'echo done' }],
-        }],
-      },
-    }));
+  it('emits StatusStateChange (not TodoStateChange) on status change', async () => {
+    const sys = createSystem();
+    sys.setInitialSessionMetadata('s1', { todoState: 'backlog' });
 
-    const system = new HookSystem({
-      workspaceRootPath: tempDir,
-      workspaceId: 'test-workspace',
-    });
-
-    // Before the compat layer, the old name should simply be dropped
-    const matchers = system.getMatchersForEvent('TodoStateChange' as any);
-    expect(matchers).toHaveLength(0);
-
-    await system.dispose();
-  });
-
-  it('emits StatusStateChange when session status changes', async () => {
-    const system = new HookSystem({
-      workspaceRootPath: tempDir,
-      workspaceId: 'test-workspace',
-    });
-
-    system.setInitialSessionMetadata('s1', { todoState: 'backlog' });
-
-    const emitSpy = spyOn(system.eventBus, 'emit');
-
-    const events = await system.updateSessionMetadata('s1', {
-      todoState: 'todo',
-    });
+    const emitSpy = spyOn(sys.eventBus, 'emit');
+    const events = await sys.updateSessionMetadata('s1', { todoState: 'todo' });
 
     expect(events).toContain('StatusStateChange');
     expect(events).not.toContain('TodoStateChange');
@@ -90,7 +75,69 @@ describe('StatusStateChange rename', () => {
       'StatusStateChange',
       expect.objectContaining({ oldState: 'backlog', newState: 'todo' }),
     );
+  });
 
-    await system.dispose();
+  // ---- backwards compatibility ----
+
+  it('remaps TodoStateChange hooks to StatusStateChange', () => {
+    writeHooksJson({
+      TodoStateChange: [{
+        matcher: 'done',
+        hooks: [{ type: 'command', command: 'echo done' }],
+      }],
+    });
+
+    const sys = createSystem();
+
+    // Old key remapped — matchers accessible under new name
+    const matchers = sys.getMatchersForEvent('StatusStateChange' as HookEvent);
+    expect(matchers).toHaveLength(1);
+    expect(matchers[0]?.matcher).toBe('done');
+
+    // Old key no longer exists
+    const oldMatchers = sys.getMatchersForEvent('TodoStateChange' as HookEvent);
+    expect(oldMatchers).toHaveLength(0);
+  });
+
+  it('logs a deprecation warning for TodoStateChange', () => {
+    const warnSpy = spyOn(console, 'warn');
+
+    writeHooksJson({
+      TodoStateChange: [{
+        matcher: 'done',
+        hooks: [{ type: 'command', command: 'echo done' }],
+      }],
+    });
+
+    createSystem();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('TodoStateChange'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('StatusStateChange'),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('merges matchers when both old and new names are present', () => {
+    writeHooksJson({
+      TodoStateChange: [{
+        matcher: 'done',
+        hooks: [{ type: 'command', command: 'echo legacy' }],
+      }],
+      StatusStateChange: [{
+        matcher: 'in_progress',
+        hooks: [{ type: 'command', command: 'echo new' }],
+      }],
+    });
+
+    const matchers = createSystem().getMatchersForEvent('StatusStateChange' as HookEvent);
+    expect(matchers).toHaveLength(2);
+
+    const matcherValues = matchers.map((m: any) => m.matcher);
+    expect(matcherValues).toContain('done');
+    expect(matcherValues).toContain('in_progress');
   });
 });

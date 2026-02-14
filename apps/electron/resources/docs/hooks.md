@@ -46,7 +46,7 @@ Hooks are configured in `hooks.json` at the root of your workspace:
 | `LabelConfigChange` | Label configuration changed | Always matches |
 | `PermissionModeChange` | Permission mode changed | New mode name |
 | `FlagChange` | Session flagged/unflagged | `true` or `false` |
-| `TodoStateChange` | Todo status changed | New status (e.g., `done`, `in_progress`) |
+| `StatusStateChange` | Session status changed | New status (e.g., `done`, `in_progress`) |
 | `SchedulerTick` | Runs every minute | Uses cron matching |
 
 ### Agent Events (passed to Claude SDK)

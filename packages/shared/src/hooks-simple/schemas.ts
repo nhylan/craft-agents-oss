@@ -51,13 +51,23 @@ export const HooksConfigSchema = z.object({
   version: z.number().optional(),
   hooks: z.record(z.string(), z.array(HookMatcherSchema)).optional().default({}),
 }).transform((data) => {
+  // Backwards-compat: remap deprecated event names
+  const DEPRECATED_EVENTS: Record<string, string> = {
+    TodoStateChange: 'StatusStateChange',
+  };
+
   // Filter out invalid event names and warn
   const validHooks: Record<string, z.infer<typeof HookMatcherSchema>[]> = {};
   const invalidEvents: string[] = [];
 
   for (const [event, matchers] of Object.entries(data.hooks)) {
-    if (VALID_EVENTS.includes(event as (typeof VALID_EVENTS)[number])) {
-      validHooks[event] = matchers;
+    const renamedTo = DEPRECATED_EVENTS[event];
+    if (renamedTo) {
+      console.warn(`[hooks] "${event}" is deprecated, use "${renamedTo}" instead`);
+      // Merge into the new event name
+      validHooks[renamedTo] = [...(validHooks[renamedTo] ?? []), ...matchers];
+    } else if (VALID_EVENTS.includes(event as (typeof VALID_EVENTS)[number])) {
+      validHooks[event] = [...(validHooks[event] ?? []), ...matchers];
     } else {
       invalidEvents.push(event);
     }
