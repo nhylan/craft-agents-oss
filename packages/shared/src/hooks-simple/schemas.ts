@@ -40,7 +40,7 @@ export const HookMatcherSchema = z.object({
 
 export const VALID_EVENTS = [
   // App events
-  'LabelAdd', 'LabelRemove', 'LabelConfigChange', 'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SchedulerTick',
+  'LabelAdd', 'LabelRemove', 'LabelConfigChange', 'PermissionModeChange', 'FlagChange', 'StatusStateChange', 'SchedulerTick',
   // Agent/SDK events
   'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification',
   'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'Stop',

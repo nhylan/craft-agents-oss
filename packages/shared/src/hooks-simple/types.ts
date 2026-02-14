@@ -15,7 +15,7 @@ export type AppEvent =
   | 'LabelConfigChange'
   | 'PermissionModeChange'
   | 'FlagChange'
-  | 'TodoStateChange'
+  | 'StatusStateChange'
   | 'SchedulerTick';
 
 /** Agent events - passed to Claude SDK */
@@ -38,7 +38,7 @@ export type HookEvent = AppEvent | AgentEvent;
 
 export const APP_EVENTS: AppEvent[] = [
   'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SchedulerTick'
+  'PermissionModeChange', 'FlagChange', 'StatusStateChange', 'SchedulerTick'
 ];
 
 export const AGENT_EVENTS: AgentEvent[] = [

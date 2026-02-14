@@ -338,9 +338,9 @@ export class HookSystem implements HooksConfigProvider {
       emittedEvents.push('FlagChange');
     }
 
-    // Todo state change
+    // Status state change
     if (prev.todoState !== next.todoState) {
-      await this.eventBus.emit('TodoStateChange', {
+      await this.eventBus.emit('StatusStateChange', {
         sessionId,
         sessionName,
         workspaceId: this.options.workspaceId,
@@ -348,7 +348,7 @@ export class HookSystem implements HooksConfigProvider {
         oldState: prev.todoState ?? '',
         newState: next.todoState ?? '',
       });
-      emittedEvents.push('TodoStateChange');
+      emittedEvents.push('StatusStateChange');
     }
 
     // Update stored metadata
