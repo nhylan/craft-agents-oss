@@ -42,7 +42,6 @@ export interface CommandHookDefinition {
 export interface PromptHookDefinition {
   type: 'prompt';
   prompt: string;
-  target?: 'same-session';
 }
 
 export type HookDefinition = CommandHookDefinition | PromptHookDefinition;
