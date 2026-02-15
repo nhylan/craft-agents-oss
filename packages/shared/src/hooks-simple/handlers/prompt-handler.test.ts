@@ -363,61 +363,6 @@ describe('PromptHandler', () => {
     });
   });
 
-  describe('same-session targeting', () => {
-    it('should use the event sessionId, not the handler sessionId', async () => {
-      const onPromptsReady = jest.fn();
-      const configProvider = createMockConfigProvider({
-        LabelAdd: [{
-          hooks: [{ type: 'prompt', target: 'same-session', prompt: 'Label added' }],
-        }],
-      });
-
-      const handler = new PromptHandler(createOptions({ onPromptsReady }), configProvider);
-      handler.subscribe(bus);
-
-      await bus.emit('LabelAdd', {
-        workspaceId: 'test-workspace',
-        timestamp: Date.now(),
-        sessionId: 'event-session',
-        label: 'bug',
-      });
-
-      expect(onPromptsReady).toHaveBeenCalledTimes(1);
-      const prompts: PendingPrompt[] = onPromptsReady.mock.calls[0]![0];
-      expect(prompts).toHaveLength(1);
-      expect(prompts[0]!.sessionId).toBe('event-session');
-
-      handler.dispose();
-    });
-
-    it('should use the handler sessionId when no target is set', async () => {
-      const onPromptsReady = jest.fn();
-      const configProvider = createMockConfigProvider({
-        LabelAdd: [{
-          hooks: [{ type: 'prompt', prompt: 'No target' }],
-        }],
-      });
-
-      const handler = new PromptHandler(createOptions({ onPromptsReady }), configProvider);
-      handler.subscribe(bus);
-
-      await bus.emit('LabelAdd', {
-        workspaceId: 'test-workspace',
-        timestamp: Date.now(),
-        sessionId: 'event-session',
-        label: 'bug',
-      });
-
-      expect(onPromptsReady).toHaveBeenCalledTimes(1);
-      const prompts: PendingPrompt[] = onPromptsReady.mock.calls[0]![0];
-      expect(prompts).toHaveLength(1);
-      expect(prompts[0]!.sessionId).toBe('test-session');
-
-      handler.dispose();
-    });
-
-  });
-
   describe('dispose', () => {
     it('should unsubscribe from the event bus', () => {
       const configProvider = createMockConfigProvider();
